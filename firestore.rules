@@ -1,0 +1,48 @@
+rules_version = '2';
+
+// ふたりの家計簿 — Firestore セキュリティルール
+// データは households/{共有ID}/ の下にだけ置きます。
+// 共有ID(22文字のランダム英数字)を知っている人だけが読み書きできる仕組みです。
+// households の一覧は誰にも取得させません。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function okId(hid) {
+      return hid.size() >= 20 && hid.size() <= 64;
+    }
+
+    function validEntry(d) {
+      return d.keys().hasOnly(['kind', 'amount', 'date', 'month', 'payer', 'memo', 'trip',
+                               'createdAt', 'cat', 'receipt', 'purpose'])
+        && d.kind in ['out', 'in']
+        && d.amount is int && d.amount > 0 && d.amount <= 100000000
+        && d.date is string && d.date.size() == 10
+        && d.month is string && d.month.size() == 7
+        && d.payer in ['a', 'b']
+        && d.memo is string && d.memo.size() <= 200
+        && d.trip is string && d.trip.size() <= 64;
+    }
+
+    function validTrip(d) {
+      return d.keys().hasOnly(['name', 'start', 'end'])
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 40
+        && d.start is string && d.end is string;
+    }
+
+    match /households/{hid}/entries/{id} {
+      allow read, delete: if okId(hid);
+      allow create, update: if okId(hid) && validEntry(request.resource.data);
+    }
+
+    match /households/{hid}/trips/{id} {
+      allow read, delete: if okId(hid);
+      allow create, update: if okId(hid) && validTrip(request.resource.data);
+    }
+
+    match /households/{hid}/meta/{id} {
+      allow read: if okId(hid) && id == 'settings';
+      allow write: if okId(hid) && id == 'settings'
+        && request.resource.data.keys().hasOnly(['members', 'categories', 'purposes']);
+    }
+  }
+}
