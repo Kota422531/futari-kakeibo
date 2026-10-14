@@ -36,8 +36,13 @@ var Calc = (function(){
   function monthsBetween(a,b){ var out=[]; if(a>b){var t=a;a=b;b=t} var m=a; while(m<=b && out.length<60){out.push(m); m=shiftMonth(m,1)} return out }
   function toInt(v){ var n=parseInt(String(v==null?'':v).replace(/[０-９]/g,function(c){return String.fromCharCode(c.charCodeAt(0)-0xFEE0)}).replace(/[^0-9]/g,''),10); return isNaN(n)?0:n }
   function groupByMonth(list, months){ var g={}; months.forEach(function(m){g[m]=[]}); list.forEach(function(e){ if(g[e.month]) g[e.month].push(e) }); return months.map(function(m){return {month:m,entries:g[m]}}) }
+  /* 登録した人(古い記録は支払った人で代用) */
+  function registrantOf(e){ return e.by || e.payer }
+  function filterBy(list, who){ return who==='all' ? list : list.filter(function(e){ return registrantOf(e)===who }) }
+  function sortByCreated(list){ return list.slice().sort(function(a,b){ return (b.createdAt||0)-(a.createdAt||0) || (b.date||'').localeCompare(a.date||'') }) }
+  function unseenFrom(list, me, since){ return list.filter(function(e){ return registrantOf(e)!==me && (e.createdAt||0)>since }) }
   function yen(n){ return '¥'+Math.round(Math.abs(n)).toLocaleString('ja-JP') }
   function signed(n){ return (n>0?'+':n<0?'−':'±')+yen(n) }
-  return {catOf:catOf,purOf:purOf,isLivingOut:isLivingOut,isLivingIn:isLivingIn,filterBook:filterBook,summarize:summarize,livingSeries:livingSeries,shiftMonth:shiftMonth,monthsBetween:monthsBetween,toInt:toInt,groupByMonth:groupByMonth,yen:yen,signed:signed};
+  return {catOf:catOf,purOf:purOf,isLivingOut:isLivingOut,isLivingIn:isLivingIn,filterBook:filterBook,summarize:summarize,livingSeries:livingSeries,shiftMonth:shiftMonth,monthsBetween:monthsBetween,toInt:toInt,groupByMonth:groupByMonth,registrantOf:registrantOf,filterBy:filterBy,sortByCreated:sortByCreated,unseenFrom:unseenFrom,yen:yen,signed:signed};
 })();
 if(typeof module!=='undefined') module.exports=Calc;
