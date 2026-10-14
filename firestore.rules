@@ -13,14 +13,15 @@ service cloud.firestore {
 
     function validEntry(d) {
       return d.keys().hasOnly(['kind', 'amount', 'date', 'month', 'payer', 'memo', 'trip',
-                               'createdAt', 'cat', 'receipt', 'purpose'])
+                               'createdAt', 'cat', 'receipt', 'purpose', 'by'])
         && d.kind in ['out', 'in']
         && d.amount is int && d.amount > 0 && d.amount <= 100000000
         && d.date is string && d.date.size() == 10
         && d.month is string && d.month.size() == 7
         && d.payer in ['a', 'b']
         && d.memo is string && d.memo.size() <= 200
-        && d.trip is string && d.trip.size() <= 64;
+        && d.trip is string && d.trip.size() <= 64
+        && (!('by' in d) || d.by in ['a', 'b']);
     }
 
     function validTrip(d) {
@@ -42,7 +43,7 @@ service cloud.firestore {
     match /households/{hid}/meta/{id} {
       allow read: if okId(hid) && id == 'settings';
       allow write: if okId(hid) && id == 'settings'
-        && request.resource.data.keys().hasOnly(['members', 'categories', 'purposes']);
+        && request.resource.data.keys().hasOnly(['members', 'categories', 'purposes', 'notify']);
     }
   }
 }
