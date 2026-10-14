@@ -140,14 +140,16 @@ const state = {
   settingsRaw: null, trips: [], month: today().slice(0, 7), book: 'daily', monthEntries: null,
   tab: 'month', tripId: null, tripEntries: null,
   diff: { from: Calc.shiftMonth(today().slice(0, 7), -5), to: today().slice(0, 7), rows: null },
-  me: LS.get('kakeibo-me', 'a'), draft: null, form: null, scanning: false, model: null, receiptOn: false
+  me: LS.get('kakeibo-me', 'a'), listSort: LS.get('kakeibo-sort', 'created'), listBy: 'all',
+  seenBase: LS.get('kakeibo-seen', 0), openedAt: Date.now(), draft: null, form: null, scanning: false, model: null, receiptOn: false
 };
 const S = () => {
   const r = state.settingsRaw || {};
   return {
     members: (r.members && r.members.length === 2) ? r.members : DEFAULTS.members,
     categories: (r.categories && r.categories.length) ? r.categories : DEFAULTS.categories,
-    purposes: (r.purposes && r.purposes.length) ? r.purposes : DEFAULTS.purposes
+    purposes: (r.purposes && r.purposes.length) ? r.purposes : DEFAULTS.purposes,
+    notify: { detail: !(r.notify && r.notify.detail === false) }
   };
 };
 const color = id => id === 'a' ? 'var(--a)' : 'var(--b)';
@@ -161,7 +163,18 @@ const shareUrl = () => location.origin + location.pathname + '#h=' + Store.hid;
 
 /* ---------- 購読 ---------- */
 let unMonth = null, unTrip = null;
-function subMonth() { if (unMonth) unMonth(); state.monthEntries = null; unMonth = Store.watchEntries('month', state.month, l => { state.monthEntries = l; render() }) }
+let knownIds = null;
+function subMonth() {
+  if (unMonth) unMonth(); state.monthEntries = null; knownIds = null;
+  unMonth = Store.watchEntries('month', state.month, l => {
+    if (knownIds) {
+      const fresh = l.filter(e => !knownIds.has(e.id) && Calc.registrantOf(e) !== state.me && (e.createdAt || 0) > state.openedAt - 60000);
+      if (fresh.length) { const e = fresh[0]; toast(`${nameOf(Calc.registrantOf(e))}さんが記録しました ― ${entryTitle(e)} ${Calc.yen(e.amount)}`) }
+    }
+    knownIds = new Set(l.map(e => e.id));
+    state.monthEntries = l; render();
+  });
+}
 function subTrip() { if (unTrip) unTrip(); unTrip = null; state.tripEntries = null; if (!state.tripId) return; unTrip = Store.watchEntries('trip', state.tripId, l => { state.tripEntries = l; render() }) }
 
 /* ---------- ⑤ 画面 ---------- */
@@ -169,7 +182,8 @@ const TABS = [['month', '今月'], ['list', '明細'], ['ease', 'ゆとり'], ['
 function render() {
   const ready = state.boot === 'ready';
   $('#tabbar').hidden = !ready;
-  $('#tabs').innerHTML = TABS.map(([k, l]) => `<button data-act="tab:${k}" ${state.tab === k ? 'aria-current="page"' : ''}>${l}</button>`).join('');
+  const unseen = ready && state.monthEntries && state.tab !== 'list' ? Calc.unseenFrom(state.monthEntries, state.me, LS.get('kakeibo-seen', 0)).length : 0;
+  $('#tabs').innerHTML = TABS.map(([k, l]) => `<button data-act="tab:${k}" ${state.tab === k ? 'aria-current="page"' : ''}>${l}${k === 'list' && unseen ? `<i class="badge" aria-label="新着${unseen}件">${unseen}</i>` : ''}</button>`).join('');
   $('#monthnav').style.visibility = ready && (state.tab === 'month' || state.tab === 'list') ? 'visible' : 'hidden';
   $('#fab').hidden = !ready || state.tab === 'settings' || state.tab === 'ease' || (state.tab === 'trips' && !state.tripId);
   $('#mode').textContent = !ready ? '' : Store.mode === 'cloud' ? (navigator.onLine ? 'ふたりで共有中' : 'オフライン ― つながると同期します') : 'お試し中(この端末だけに保存)';
@@ -232,23 +246,44 @@ function viewMonth() {
     <div class="calc"><span>入金 ${fig(liv.livingIn)}</span><span>支出 ${fig(liv.livingOut)}</span></div>
     <button class="link" data-act="tab:ease">数ヶ月の通算を見る</button></div></section>`;
 }
-function itemRow(e) {
+function entryTitle(e) {
   const s = S();
-  const title = e.kind === 'in' ? '入金 ' + ((Calc.purOf(s, e.purpose) || {}).name || 'その他') : ((Calc.catOf(s, e.cat) || {}).name || '未分類');
-  const meta = [`<span class="payer"><i class="dot" style="background:${color(e.payer)}"></i>${esc(nameOf(e.payer))}</span>`];
+  return e.kind === 'in' ? '入金 ' + ((Calc.purOf(s, e.purpose) || {}).name || 'その他') : ((Calc.catOf(s, e.cat) || {}).name || '未分類');
+}
+const hm = t => { const d = new Date(t); return d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0') };
+const mdOf = t => { const d = new Date(t); return `${d.getMonth() + 1}月${d.getDate()}日(${'日月火水木金土'[d.getDay()]})` };
+function itemRow(e, opt = {}) {
+  const title = entryTitle(e);
+  const by = Calc.registrantOf(e);
+  const isNew = by !== state.me && (e.createdAt || 0) > state.seenBase;
+  const meta = [`<span class="payer"><i class="dot" style="background:${color(e.payer)}"></i>${esc(nameOf(e.payer))}${e.kind === 'in' ? 'が入金' : 'が支払い'}</span>`];
+  if (by !== e.payer) meta.push('登録 ' + esc(nameOf(by)));
+  if (opt.useDate) meta.push('使った日 ' + Number(e.date.slice(5, 7)) + '/' + Number(e.date.slice(8)));
+  if (opt.time && e.createdAt) meta.push(hm(e.createdAt) + ' 登録');
   if (e.trip) meta.push('旅 ' + esc(tripName(e.trip)));
   if (e.kind === 'out') meta.push(e.receipt ? '証憑あり' : '証憑なし');
   if (e.memo) meta.push(esc(e.memo));
-  return `<button class="item ${e.kind}" data-act="edit:${esc(e.id)}"><span class="cat">${esc(title)}</span><span class="fig amt">${e.kind === 'in' ? '+' : ''}${Calc.yen(e.amount)}</span><span class="meta">${meta.join('<span aria-hidden="true">/</span>')}</span></button>`;
+  return `<button class="item ${e.kind}" data-act="edit:${esc(e.id)}"><span class="cat">${esc(title)}${isNew ? '<i class="tag new">新着</i>' : ''}</span><span class="fig amt">${e.kind === 'in' ? '+' : ''}${Calc.yen(e.amount)}</span><span class="meta">${meta.join('<span aria-hidden="true">/</span>')}</span></button>`;
 }
 function groupByDay(list) {
   const g = {}; list.forEach(e => { (g[e.date] = g[e.date] || []).push(e) });
   return Object.keys(g).sort().reverse().map(d => `<div class="day"><h3>${jpDate(d)}</h3>${g[d].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(itemRow).join('')}</div>`).join('');
 }
+function groupByCreated(list) {
+  const g = []; Calc.sortByCreated(list).forEach(e => { const k = e.createdAt ? mdOf(e.createdAt) : '登録日不明'; const last = g[g.length - 1]; if (last && last.k === k) last.items.push(e); else g.push({ k, items: [e] }) });
+  return g.map(x => `<div class="day"><h3>${x.k}に登録</h3>${x.items.map(e => itemRow(e, { useDate: true, time: true })).join('')}</div>`).join('');
+}
 function viewList() {
   const all = state.monthEntries; if (!all) return '<p class="loading">ひらいています…</p>';
-  const chips = bookChips(all), list = Calc.filterBook(all, state.book);
-  return `<section class="tripcover"><h1>${jpMonth(state.month)}の明細</h1></section>${chips}${list.length ? groupByDay(list) : '<p class="empty">この範囲の記録はまだありません。</p>'}`;
+  const s = S(), chips = bookChips(all);
+  const list = Calc.filterBy(Calc.filterBook(all, state.book), state.listBy);
+  const sum = Calc.summarize(list, s);
+  const who = [['all', 'ふたりとも'], ...s.members.map(m => [m.id, m.name + 'の登録'])];
+  const ctl = `<div class="seg" role="group" aria-label="登録した人">${who.map(([id, l]) => `<button class="chip" data-act="lby:${id}" aria-pressed="${state.listBy === id}">${id === 'all' ? '' : `<i class="dot" style="background:${color(id)};margin-right:6px"></i>`}${esc(l)}</button>`).join('')}</div>
+  <div class="sortbar"><span>並び順</span><button class="tab2" data-act="lsort:created" aria-pressed="${state.listSort === 'created'}">登録した順</button><button class="tab2" data-act="lsort:date" aria-pressed="${state.listSort === 'date'}">使った日順</button></div>`;
+  const head = list.length ? `<p class="note">${list.length}件 / 支出 ${Calc.yen(sum.totalOut)} / 入金 ${Calc.yen(sum.totalIn)}</p>` : '';
+  const body = !list.length ? '<p class="empty">この条件の記録はまだありません。</p>' : state.listSort === 'created' ? groupByCreated(list) : groupByDay(list);
+  return `<section class="tripcover"><h1>${jpMonth(state.month)}の明細</h1></section>${chips}${ctl}${head}${body}`;
 }
 function viewEase() {
   const d = state.diff, rows = d.rows;
@@ -319,6 +354,7 @@ function viewSettings() {
   ${share}
   <section class="sec"><h2>この端末で使う人</h2><p class="note">記録するとき、支払った人の初期値になります。</p>
     <div class="chips" style="margin-top:14px">${d.members.map(m => `<button class="chip" data-act="me:${m.id}" aria-pressed="${state.me === m.id}">${esc(m.name)}</button>`).join('')}</div></section>
+  ${viewNotify()}
   <section class="sec"><h2>ふたりの名前</h2>${d.members.map((m, i) => `<div class="field"><label>${i === 0 ? 'ひとりめ' : 'ふたりめ'}</label><input class="inp" data-set="member-name" data-i="${i}" value="${esc(m.name)}" maxlength="20"></div>`).join('')}</section>
   <section class="sec"><h2>支出の項目</h2><p class="note">「生活費」に印をつけた項目が、生活費のゆとりの計算に入ります。</p>
     <div style="margin-top:10px">${d.categories.map((c, i) => row('cat', c, i)).join('')}</div>
@@ -373,8 +409,9 @@ async function saveForm() {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date)) { toast('日付を選んでください'); return }
   const data = { kind: f.kind, amount: amt, date: f.date, month: f.date.slice(0, 7), payer: f.payer, memo: (f.memo || '').slice(0, 200), trip: f.trip || '', createdAt: f.createdAt || Date.now() };
   if (f.kind === 'out') { data.cat = f.cat; data.receipt = !!f.receipt } else { data.purpose = f.purpose }
+  data.by = f.by || state.me;
   const btn = document.querySelector('[data-act="f-save"]'); if (btn) btn.disabled = true;
-  try { await Store.saveEntry(f.id || null, data); toast(f.id ? '更新しました' : '記録しました'); closeSheet() }
+  try { const isNew = !f.id; await Store.saveEntry(f.id || null, data); toast(f.id ? '更新しました' : '記録しました'); closeSheet(); if (isNew) notifyPartner(data) }
   catch (e) { if (btn) btn.disabled = false; toast(errMsg(e)) }
 }
 
@@ -435,6 +472,52 @@ category の候補: ${s.categories.map(c => `${c.id}=${c.name}`).join(', ')}
   } finally { state.scanning = false; if (state.form) renderSheet() }
 }
 
+/* ---------- ③ 相手への通知(ntfy) ---------- */
+const NTFY = 'https://ntfy.sh/';
+const appUrl = () => location.origin + location.pathname;   // 共有ID(#h=…)は外部に送らない
+function newTopic() { return 'futari-' + newHouseholdId().slice(0, 20) }
+async function ntfyPost(topic, title, message) {
+  // Content-Type を付けない単純リクエストにして、事前確認なしで送る
+  const r = await fetch(NTFY, { method: 'POST', body: JSON.stringify({ topic, title, message, click: appUrl(), tags: ['memo'] }) });
+  if (!r.ok) throw new Error('ntfy ' + r.status);
+}
+async function notifyPartner(data) {
+  if (Store.mode !== 'cloud') return;
+  const s = S(), partner = s.members.find(m => m.id !== state.me);
+  if (!partner || !partner.topic) return;
+  const who = nameOf(state.me) + 'さんが記録しました';
+  const msg = s.notify.detail
+    ? `${entryTitle(data)} ${Calc.yen(data.amount)}${data.trip ? '(旅 ' + tripName(data.trip) + ')' : ''}${data.memo ? '\n' + data.memo : ''}`
+    : 'アプリを開いて確認してください';
+  try { await ntfyPost(partner.topic, who, msg) } catch (e) { console.warn('通知を送れませんでした', e) }
+}
+async function saveSettingsWith(fn) {
+  const cur = JSON.parse(JSON.stringify(S())); fn(cur);
+  await Store.saveSettings(cur);
+  if (state.draft) { const d = state.draft; fn(d) }
+}
+function viewNotify() {
+  if (Store.mode !== 'cloud') return '';
+  const s = S(), me = s.members.find(m => m.id === state.me), partner = s.members.find(m => m.id !== state.me);
+  const mine = me && me.topic;
+  const setup = mine ? `
+    <ol class="steps">
+      <li>スマホに無料アプリ「ntfy」を入れます。<span class="links"><a href="https://apps.apple.com/app/ntfy/id1625396347" target="_blank" rel="noopener">iPhone</a><a href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" target="_blank" rel="noopener">Android</a></span></li>
+      <li>アプリの「+」を押し、下の名前をそのまま入れて購読します。</li>
+      <li>「テスト通知」を押して、届けば完了です。</li>
+    </ol>
+    <div class="sharebox" id="topic">${esc(me.topic)}</div>
+    <div class="btnrow"><button class="btn" data-act="nt-copy">名前をコピー</button><button class="btn ghost" data-act="nt-test">テスト通知</button></div>
+    <button class="link" data-act="nt-off">通知を受け取るのをやめる</button>`
+    : `<div class="btnrow"><button class="btn" data-act="nt-on">${esc(nameOf(state.me))}のスマホで通知を受け取る</button></div>`;
+  return `<section class="sec"><h2>相手が記録したら通知</h2>
+    <p class="note">${esc(partner ? partner.name : '相手')}さんが記録すると、${esc(nameOf(state.me))}さんのスマホに通知が届きます。通知は無料サービス「ntfy」を通して送られます。</p>
+    ${setup}
+    <p class="note" style="margin-top:14px">${esc(partner ? partner.name : '相手')}さん:${partner && partner.topic ? '通知を受け取る設定済み' : 'まだ設定していません'}</p>
+    <div class="toggle"><span>通知に項目・金額・メモを含める</span><button class="sw" role="switch" aria-checked="${s.notify.detail}" data-act="nt-detail" aria-label="通知に内容を含める"></button></div>
+  </section>`;
+}
+
 /* ---------- 共有 ---------- */
 async function shareLink() {
   const url = shareUrl();
@@ -455,7 +538,7 @@ document.addEventListener('click', async ev => {
   switch (act) {
     case 'tab':
       if (state.tab === 'settings' && arg !== 'settings') state.draft = null;
-      state.tab = arg; if (arg === 'ease') loadEase(); render(); window.scrollTo(0, 0); break;
+      state.tab = arg; if (arg === 'ease') loadEase(); if (arg === 'list') LS.set('kakeibo-seen', Date.now()); render(); window.scrollTo(0, 0); break;
     case 'month-prev': case 'month-next':
       state.month = Calc.shiftMonth(state.month, act === 'month-prev' ? -1 : 1); subMonth(); render(); break;
     case 'book': state.book = rest; render(); break;
@@ -487,8 +570,15 @@ document.addEventListener('click', async ev => {
     case 'set-reset': state.draft = null; render(); break;
     case 'set-save': {
       const d = state.draft; if (d.members.some(m => !m.name.trim()) || d.categories.some(c => !c.name.trim()) || d.purposes.some(p => !p.name.trim())) { toast('空の名前があります'); return }
-      try { await Store.saveSettings(JSON.parse(JSON.stringify(d))); state.draft = null; toast('設定を保存しました') } catch (e) { toast(errMsg(e)) } break
+      try { const cur = S(), out = JSON.parse(JSON.stringify(d)); out.members.forEach((m, i) => { const t = cur.members[i] && cur.members[i].topic; if (t) m.topic = t; else delete m.topic }); out.notify = cur.notify; await Store.saveSettings(out); state.draft = null; toast('設定を保存しました') } catch (e) { toast(errMsg(e)) } break
     }
+    case 'lby': state.listBy = arg; render(); break;
+    case 'lsort': state.listSort = arg; LS.set('kakeibo-sort', arg); render(); break;
+    case 'nt-on': { const t = newTopic(); try { await saveSettingsWith(x => { x.members.find(m => m.id === state.me).topic = t }); toast('通知の受け取り先をつくりました') } catch (e) { toast(errMsg(e)) } break }
+    case 'nt-off': if (confirm('このスマホで通知を受け取るのをやめます。')) { try { await saveSettingsWith(x => { delete x.members.find(m => m.id === state.me).topic }); toast('通知をやめました') } catch (e) { toast(errMsg(e)) } } break;
+    case 'nt-detail': try { await saveSettingsWith(x => { x.notify = { detail: !S().notify.detail } }) } catch (e) { toast(errMsg(e)) } break;
+    case 'nt-copy': { const t = (S().members.find(m => m.id === state.me) || {}).topic || ''; try { await navigator.clipboard.writeText(t); toast('コピーしました。ntfy アプリに貼り付けてください') } catch (e) { toast('名前を長押ししてコピーしてください') } break }
+    case 'nt-test': { const t = (S().members.find(m => m.id === state.me) || {}).topic; if (!t) return; try { await ntfyPost(t, 'ふたりの家計簿', 'テスト通知です。届いていれば設定完了です。'); toast('テスト通知を送りました') } catch (e) { toast('送れませんでした。通信を確かめてください') } break }
     case 'share': shareLink(); break;
     case 'copy': copyLink(); break;
     case 'hh-new': { const id = newHouseholdId(); LS.set('kakeibo-hid', id); location.hash = 'h=' + id; location.reload(); break }
